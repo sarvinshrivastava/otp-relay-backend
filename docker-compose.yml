@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    container_name: ${SERVICE_NAME:-app}
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      - PORT=3000
+      - SERVICE_NAME=${SERVICE_NAME:-app}

@@ -1,0 +1,39 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch VPS credentials from secrets-manager
+        run: |
+          SM_URL="https://secrets.vps.sarvinshrivastava.space/api/secrets/Root"
+          SM_TOKEN="${{ secrets.SM_READ_TOKEN }}"
+
+          VPS_HOST=$(curl -sf -H "X-API-Key: $SM_TOKEN" "$SM_URL/VPS_HOST" | jq -r '.value')
+          echo "VPS_HOST=$VPS_HOST" >> "$GITHUB_ENV"
+
+          {
+            echo "VPS_SSH_KEY<<SSHEOF"
+            curl -sf -H "X-API-Key: $SM_TOKEN" "$SM_URL/VPS_SSH_KEY" | jq -r '.value'
+            echo "SSHEOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ env.VPS_HOST }}
+          username: root
+          key: ${{ env.VPS_SSH_KEY }}
+          script: |
+            REPO_NAME=$(basename "${{ github.repository }}")
+            APP_DIR="/root/apps/$REPO_NAME"
+            if [ ! -d "$APP_DIR/.git" ]; then
+              git clone "${{ github.server_url }}/${{ github.repository }}.git" "$APP_DIR"
+            else
+              git -C "$APP_DIR" pull origin main
+            fi
+            vps-deploy "$REPO_NAME" "$APP_DIR"
