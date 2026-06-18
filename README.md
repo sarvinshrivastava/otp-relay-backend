@@ -1,61 +1,69 @@
-# VPS Service Template
+# otp-relay-backend
 
-A GitHub Template Repository for deploying Node.js services to the VPS at `*.vps.sarvinshrivastava.space`.
+A self-hosted, **end-to-end encrypted OTP relay**. An Android source client reads
+an incoming OTP, encrypts it (AES-256-GCM) on-device, and pushes the ciphertext
+to this relay. The relay fans out a Web Push *signal* to your PWA destination
+devices; after you pass a biometric/PIN gate on a device, that device claims and
+decrypts the OTP. **The relay never sees plaintext.**
 
-## Using this template
-
-1. Click **"Use this template"** on GitHub and name your new repo (e.g. `notion-cache`)
-2. Add a single GitHub secret to your new repo:
-   - `SM_READ_TOKEN` — the read token for the secrets-manager
-3. Add your service's secrets to secrets-manager under the `SERVICENAME_*` prefix (see convention below)
-4. Push to `main` — the workflow auto-deploys your service
-
-The VPS deploy script handles everything else: port assignment, Nginx vhost creation, and SSL via the wildcard cert at `*.vps.sarvinshrivastava.space`.
-
-## Secret naming convention
-
-Secrets in secrets-manager are namespaced by service name. The prefix is derived by uppercasing the repo name and replacing hyphens with underscores:
-
-| Repo / service name | Secrets prefix    | Example secret          |
-|---------------------|-------------------|-------------------------|
-| `notion-cache`      | `NOTION_CACHE_`   | `NOTION_CACHE_API_KEY`  |
-| `webhook-relay`     | `WEBHOOK_RELAY_`  | `WEBHOOK_RELAY_SECRET`  |
-| `my-api`            | `MY_API_`         | `MY_API_DATABASE_URL`   |
-
-At deploy time, `vps-deploy` fetches all secrets matching your service's prefix, strips the prefix, and writes them to `.env` inside the container.
-
-## Adding secrets to secrets-manager
-
-```bash
-curl -X POST https://secrets.vps.sarvinshrivastava.space/api/secrets \
-  -H "X-API-Key: <ADMIN_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"key":"NOTION_CACHE_API_KEY","value":"your-value","folder":"Root"}'
+```
+┌─────────────┐  encrypted OTP   ┌─────────────┐  push signal   ┌─────────────┐
+│ otp-android │ ───────────────▶ │  otp-relay  │ ─────────────▶ │   otp-pwa   │
+│  (source)   │   /ws · /api     │  (this repo)│  (no payload)  │(destination)│
+└─────────────┘                  └──────┬──────┘                └──────┬──────┘
+                                        │   claim (after biometric)    │
+                                        │ ◀────────────────────────────┘
+                                        │   otp_payload (ciphertext+iv) over WS
+                                        ▼
+                                   SQLite (ciphertext only)
 ```
 
-## What gets deployed
+## Highlights
 
-- Your service runs inside a Docker container built from the `Dockerfile`
-- It is assigned a unique port automatically (starting at 3001, tracked in `/etc/vps-registry/ports.json`)
-- An Nginx vhost is created at `<service-name>.vps.sarvinshrivastava.space` with HTTPS
-- The container restarts automatically (`unless-stopped`)
+- **E2E encryption** — relay stores/forwards ciphertext + IV only; no server-side decryption.
+- **Biometric-gated fetch** — push carries only a signal; payload is delivered after the device's local gate.
+- **Dual-claim invalidation** — if two devices claim the same OTP within `CLAIM_WINDOW_MS` (default 7s), neither gets it.
+- **Realistic expiry** — `OTP_TTL_MS` (default 2 min), never an artificial 30s.
+- **Boring & auditable** — Go stdlib + chi, SQLite, no Redis/Postgres/ORM/JWT/OAuth.
 
-## Local development
+## Quick start (local)
 
 ```bash
 cp .env.example .env
-# fill in .env values
-npm install
-npm run dev
+go run ./cmd/gen-totp-secret    # -> TOTP_SECRET (+ enrol an authenticator app)
+go run ./cmd/gen-vapid          # -> VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY
+# set SESSION_SECRET=$(openssl rand -hex 32) and DB_PATH=./data/relay.db in .env
+RELAY_ENV=development go run .
+curl localhost:8080/health      # {"status":"ok"}
 ```
 
-## Project structure
+> CGO is required (the `go-sqlite3` driver compiles SQLite). macOS needs Xcode
+> command-line tools; the Docker build installs `gcc musl-dev`.
 
-```
-├── .github/workflows/deploy.yml  # CI/CD — only needs SM_READ_TOKEN secret
-├── src/index.js                   # Entry point — replace with your code
-├── Dockerfile
-├── docker-compose.yml
-├── package.json
-└── .env.example
-```
+## Tech stack
+
+| Concern        | Library |
+|----------------|---------|
+| WebSocket      | `gorilla/websocket` |
+| Web Push       | `SherClockHolmes/webpush-go` |
+| SQLite         | `mattn/go-sqlite3` (CGO) |
+| TOTP           | `pquerna/otp` |
+| HTTP router    | `net/http` + `go-chi/chi/v5` |
+| QR (onboarding)| `skip2/go-qrcode` |
+| Env config     | `joho/godotenv` |
+| Logging        | `log/slog` (stdlib) |
+
+## Documentation
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — components, data flow, concurrency model
+- [`docs/SECURITY.md`](docs/SECURITY.md) — threat model & the invariants that defend it
+- [`docs/API.md`](docs/API.md) — every REST + WebSocket endpoint
+- [`docs/ONBOARDING.md`](docs/ONBOARDING.md) — registering source/destination devices
+- [`CLAUDE.md`](CLAUDE.md) — contributor map & what-not-to-touch
+
+## Deploy
+
+Deploy model **Option B**: this repo ships only the relay container; the shared
+VPS Nginx terminates TLS, proxies `/ws` + `/api`, and serves the `otp-pwa` dist.
+Push to `main` → GitHub Actions → `vps-deploy`. See `nginx/otp.conf` for the
+reference vhost and `docs/ARCHITECTURE.md` for the full picture.

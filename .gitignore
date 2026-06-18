@@ -1,4 +1,14 @@
-node_modules/
+# Secrets & local config
 .env
-dist/
+
+# Built binary (output of `go build -o relay .`)
+/relay
+
+# SQLite data (local dev DB + WAL/SHM sidecar files)
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
 *.log
