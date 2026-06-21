@@ -10,15 +10,31 @@ jobs:
     steps:
       - name: Fetch VPS credentials from secrets-manager
         run: |
-          SM_URL="https://secrets.vps.sarvinshrivastava.space/api/secrets/Root"
+          SM_BASE="https://secrets.vps.sarvinshrivastava.space/api/secrets"
           SM_TOKEN="${{ secrets.SM_READ_TOKEN }}"
 
-          VPS_HOST=$(curl -sf -H "X-API-Key: $SM_TOKEN" "$SM_URL/VPS_HOST" | jq -r '.value')
+          # Fetch a secret value: try the shared Root folder first, then fall
+          # back to the per-app otp folder. Prints the value (newline-terminated)
+          # on success; fails the step if found in neither.
+          fetch_secret() {
+            local key="$1" folder val
+            for folder in Root otp; do
+              val=$(curl -sf -H "X-API-Key: $SM_TOKEN" "$SM_BASE/$folder/$key" 2>/dev/null | jq -r '.value // empty' 2>/dev/null) || true
+              if [ -n "$val" ]; then
+                printf '%s\n' "$val"
+                return 0
+              fi
+            done
+            echo "::error::secret '$key' not found in Root or otp folder" >&2
+            return 1
+          }
+
+          VPS_HOST=$(fetch_secret VPS_HOST)
           echo "VPS_HOST=$VPS_HOST" >> "$GITHUB_ENV"
 
           {
             echo "VPS_SSH_KEY<<SSHEOF"
-            curl -sf -H "X-API-Key: $SM_TOKEN" "$SM_URL/VPS_SSH_KEY" | jq -r '.value'
+            fetch_secret VPS_SSH_KEY
             echo "SSHEOF"
           } >> "$GITHUB_ENV"
 
